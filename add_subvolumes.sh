@@ -320,7 +320,7 @@ echo "Btrfs subvolume migration completed successfully."
 
 ###############################################################################
 
-printf '\n----------------------------------------\n'
+printf '\n%s\n' '----------------------------------------'
 printf ' Migration complete.\n'
 printf ' Please reboot to activate all changes.\n'
-printf '----------------------------------------\n\n'
+printf '%s\n\n' '----------------------------------------'
