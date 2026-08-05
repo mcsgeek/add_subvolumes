@@ -1,16 +1,30 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# add_subvolumes.sh
+#
+# Safely convert existing directories into dedicated Btrfs subvolumes
+# while preserving their contents and automatically updating /etc/fstab.
+#
+# Version: 1.0.0
+# License: GPL-3.0-or-later
+#
 # Copyright (C) 2026 Scott McClain
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 set -euo pipefail
 
-#################################################################################
+if [[ $EUID -eq 0 ]]; then
+    echo "Error: Run this script as your normal user, without sudo." >&2
+    echo "The script will request sudo privileges when required." >&2
+    exit 1
+fi
 
 # Identify the active non-root execution user natively
 REAL_USER="$USER"
-echo "Initializing optimization framework for user: ${REAL_USER}"
+echo "Preparing Btrfs subvolume migration for user: ${REAL_USER}"
 
 ###############################################################################
-# PHASE 1: SANITIZE AND PACK MOUNT OPTIONS IN /ETC/FSTAB
+# PHASE 1: PREPARE FSTAB
 ###############################################################################
 echo "Optimizing target BTRFS fstab mount flags..."
 sudo cp -a /etc/fstab /etc/fstab.pre-subvolume
@@ -63,82 +77,19 @@ echo "Base optimizations established for new subvolumes: ${OPTIONS}"
 sleep 2
 
 ###############################################################################
-# PHASE 2: INITIALIZE DISK ENVIRONMENT AND SUBVOLUME ARRAYS
+# PHASE 2: INITIALIZE MIGRATION
 ###############################################################################
 ROOT_UUID="$(sudo grub-probe --target=fs_uuid /)"
 DEVICE="$(df --output=source / | tail -n 1)"
 echo "Target Device: ${DEVICE} | UUID: ${ROOT_UUID}"
 
-CORE_ROOTVOLUMES=(
-  "opt"
-  "srv"
-  "var/cache"
-  "var/crash"
-  "var/log"
-  "var/spool"
-  "var/tmp"
-)
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-OPTIONAL_ROOTVOLUMES=(
-  "root"
-  "var/lib/flatpak"
-  "var/lib/libvirt/images"
-  "var/lib/machines"
-  "var/lib/sddm"
-  "var/opt"
-  "var/www"
+source "${SCRIPT_DIR}/ROOTVOLUMES.conf"
+source "${SCRIPT_DIR}/HOMEVOLUMES.conf"
 
-  # Container engines
-  # "var/lib/docker"
-  # "var/lib/podman"
-
-  # Database storage
-  # "var/lib/postgresql"
-  # "var/lib/mysql"
-)
-
+# Build the effective subvolume migration lists from the configured defaults.
 ROOTVOLUMES=("${CORE_ROOTVOLUMES[@]}" "${OPTIONAL_ROOTVOLUMES[@]}")
-
-CORE_HOMEVOLUMES=(
-  "home/${REAL_USER}/.mozilla"
-  "home/${REAL_USER}/.thunderbird"
-  "home/${REAL_USER}/.gnupg"
-  "home/${REAL_USER}/.ssh"
-  "home/${REAL_USER}/.cache"
-)
-
-OPTIONAL_HOMEVOLUMES=(
-    # Chromium browser profile
-    "home/${REAL_USER}/.config/google-chrome"
-
-    # Falkon browser profile
-    "home/${REAL_USER}/.config/falkon"
-
-    # Flatpak runtimes and installed applications
-    "home/${REAL_USER}/.local/share/flatpak"
-
-    # Flatpak application data (Steam, Firefox, LibreOffice, etc.)
-    "home/${REAL_USER}/.var/app"
-
-    # Legacy native Steam installation
-    # "home/${REAL_USER}/.local/share/Steam"
-
-    # Rootless Podman containers
-    # "home/${REAL_USER}/.local/share/containers"
-
-    # Virtual machines
-    "home/${REAL_USER}/.quickemu"
-
-    # Workflow directories
-    "home/${REAL_USER}/Public"
-    "home/${REAL_USER}/temp"
-    "home/${REAL_USER}/Downloads/temp"
-    "home/${REAL_USER}/Backups"
-
-    # Convenience
-    "home/${REAL_USER}/.local/share/Trash"
-)
-
 HOMEVOLUMES=("${CORE_HOMEVOLUMES[@]}" "${OPTIONAL_HOMEVOLUMES[@]}")
 
 ROOT_MAX_LEN="$(printf '/%s
@@ -211,7 +162,7 @@ sudo mount -o subvolid=5 "${DEVICE}" "${MNT_TMP}"
 BOOTED_INTO_SNAPSHOT=$(findmnt -no OPTIONS / | grep -q '@/.snapshots/' && echo true || echo false)
 
 ###############################################################################
-# PHASE 3: EXECUTE ROOT TARGET MIGRATIONS (/@/ PREFIX)
+# PHASE 3: MIGRATE ROOT SUBVOLUMES
 ###############################################################################
 echo "Processing Root System Subvolumes..."
 
@@ -291,7 +242,7 @@ fi
 done
 
 ###############################################################################
-# PHASE 4: EXECUTE HOME TARGET MIGRATIONS (/@HOME/ PREFIX)
+# PHASE 4: MIGRATE HOME SUBVOLUMES
 ###############################################################################
 echo "Processing User Home Subvolumes..."
 for dir in "${HOMEVOLUMES[@]}" ; do
@@ -333,7 +284,7 @@ sudo umount "${MNT_TMP}"
 sudo rmdir "${MNT_TMP}"
 
 ###############################################################################
-# PHASE 5: OWNERSHIP FIXES AND COMMITTING CONFIGURATIONS
+# PHASE 5: FINALIZE CONFIGURATION
 ###############################################################################
 echo "Finalizing access permissions and directory authorization mappings..."
 sleep 1
@@ -350,7 +301,7 @@ echo "Completed storage subsystem attachment verification."
 sleep 1
 
 ###############################################################################
-# PHASE 6: POST-FLIGHT CLEANUP OF OLD DIRECTORIES
+# PHASE 6: CLEAN UP
 ###############################################################################
 echo "Cleaning up backup folders..."
 for dir in "${HOMEVOLUMES[@]}" ; do
@@ -365,9 +316,11 @@ for dir in "${ROOTVOLUMES[@]}" ; do
   fi
 done
 
-echo "System subvolume structuralization sequence finished successfully!"
+echo "Btrfs subvolume migration completed successfully."
 
 ###############################################################################
 
-echo
-printf '\n----------------------\n REBOOT AND ALL DONE!\n----------------------\n\n'
+printf '\n----------------------------------------\n'
+printf ' Migration complete.\n'
+printf ' Please reboot to activate all changes.\n'
+printf '----------------------------------------\n\n'
