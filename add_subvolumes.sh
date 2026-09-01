@@ -5,7 +5,7 @@
 # Safely convert existing directories into dedicated Btrfs subvolumes
 # while preserving their contents and automatically updating /etc/fstab.
 #
-# Version: 1.0.0
+# Version: 1.0.1
 # License: GPL-3.0-or-later
 #
 # Copyright (C) 2026 Scott McClain
@@ -45,6 +45,10 @@ has_opt() {
     fi
   done
   return 1
+}
+
+is_btrfs_mountpoint() {
+  findmnt -rn --mountpoint "$1" --types btrfs &>/dev/null
 }
 
 # Collect target optimizations to add
@@ -180,6 +184,12 @@ for dir in "${ROOTVOLUMES[@]}"; do
       ;;
   esac
 
+  # Leave independently mounted Btrfs subvolumes in their existing layout.
+  if is_btrfs_mountpoint "/${dir}"; then
+      echo "Skipping /${dir}: Already an independently mounted Btrfs subvolume."
+      continue
+  fi
+
   #
   # Skip if already a Btrfs subvolume.
   #
@@ -247,6 +257,12 @@ done
 echo "Processing User Home Subvolumes..."
 for dir in "${HOMEVOLUMES[@]}" ; do
   BTRFS_HOME_PATH=$(echo "${dir}" | sed 's|^home/||')
+
+  # Leave independently mounted Btrfs subvolumes in their existing layout.
+  if is_btrfs_mountpoint "/${dir}"; then
+    echo "Skipping /${dir}: Already an independently mounted Btrfs subvolume."
+    continue
+  fi
 
   # Correctly verify if it's an actual subvolume, not a standard directory
   if sudo btrfs subvolume show "${MNT_TMP}/@home/${BTRFS_HOME_PATH}" &>/dev/null; then

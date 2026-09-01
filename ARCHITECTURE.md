@@ -73,7 +73,13 @@ Each configured path follows the same decision process.
 Configured Path
         │
         ▼
-Already a Btrfs Subvolume?
+Exact Path Is an Active Btrfs Mount?
+        │
+   Yes  │  No
+        ▼
+ Skip   │
+         ▼
+Requested Nested Subvolume Exists?
         │
    Yes  │  No
         ▼
@@ -86,6 +92,8 @@ Already a Btrfs Subvolume?
       ▼        ▼
  Convert    Create
 ```
+
+The exact mount-point check uses `findmnt` and requires both an exact target match and the Btrfs filesystem type. A directory merely residing on the root Btrfs filesystem does not satisfy this check. This preserves distribution-provided independent mounts without encoding distribution names or subvolume naming conventions.
 
 When converting an existing directory, the migration engine:
 
@@ -102,7 +110,20 @@ When converting an existing directory, the migration engine:
 
 Existing subvolumes are detected before any migration occurs.
 
+Existing exact target-path Btrfs mounts are also detected before any rename or conversion attempt. Their current mount and `/etc/fstab` layout remain authoritative.
+
 This allows the utility to be safely rerun as additional paths are enabled within the configuration.
+
+---
+
+## Compatibility Model
+
+The migration engine supports two layouts at the same time:
+
+- Ordinary paths that should be converted into nested `@/...` or `@home/...` subvolumes.
+- Exact target paths already backed by independent Btrfs mounts, which are preserved unchanged.
+
+The implementation is distribution-neutral. Compatibility validation covers Debian, Ubuntu, Kubuntu, and CachyOS, representing Debian/Ubuntu-based and Arch-based systems. Version 1.0.1 was regression-tested on Debian and CachyOS after the independent-mount detection was added.
 
 ---
 
