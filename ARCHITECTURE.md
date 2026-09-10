@@ -2,13 +2,14 @@
 
 ## Overview
 
-**add_subvolumes** is a configuration-driven utility for establishing dedicated Btrfs subvolumes on systems using the standard nested `@` and `@home` layout.
+**add_subvolumes** is a configuration-driven migration utility for establishing dedicated Btrfs subvolumes within an existing Btrfs root layout and, when present, a separate Btrfs home layout.
 
 The project intentionally separates **configuration** from the **migration engine**.
 
 ```
 ROOTVOLUMES.conf
 HOMEVOLUMES.conf
+ACTIVITY_POLICIES.conf
         │
         ▼
 Configuration
@@ -48,16 +49,22 @@ Discover Environment
 Load Configuration
         │
         ▼
-Validate Available Space
+Validate Storage and Activity
         │
         ▼
-Process Configured Paths
+Start Recoverable Transaction
         │
         ▼
-Update /etc/fstab
+Migrate and Verify Configured Paths
         │
         ▼
-Verify Mounts
+Stage /etc/fstab
+        │
+        ▼
+Verify and Synchronize Mounts
+        │
+        ▼
+Commit /etc/fstab Atomically
         │
         ▼
 Cleanup
@@ -101,8 +108,54 @@ When converting an existing directory, the migration engine:
 2. Creates a new Btrfs subvolume.
 3. Mounts the new subvolume.
 4. Copies the existing contents.
-5. Updates `/etc/fstab`.
-6. Removes the temporary directory.
+5. Stages the required `/etc/fstab` entry.
+6. Verifies the copy and replacement mount.
+
+After every changed path passes its final mount check and is synchronized, the engine atomically commits the prepared `fstab`. Verified recovery directories are then removed independently.
+
+---
+
+## Root and Home Layout Discovery
+
+The engine derives the stable root from the active Btrfs mount. When run from a nested Snapper snapshot, it removes the snapshot suffix and creates new root paths beneath the stable base instead of inside the historical snapshot. The base root may be named `@`, `@rootfs`, `@btrfs`, or another valid subvolume path.
+
+Home paths are processed only when `/home` is a separate Btrfs mount. A separate home filesystem may use another device and another subvolume base. Inline home layouts are reported and skipped without blocking eligible root paths.
+
+Exact target paths already mounted as Btrfs subvolumes remain authoritative and are preserved.
+
+---
+
+## Configuration and Activity Policy
+
+The Bash launcher validates the command line and starts an embedded Python 3.9+ migration engine. Configuration files are parsed as a restricted data format; they are never sourced as shell code.
+
+`ROOTVOLUMES.conf` and `HOMEVOLUMES.conf` define migration targets. `ACTIVITY_POLICIES.conf` assigns exceptional behavior to exact configured paths:
+
+- `accept_risk` permits an explicit decision to migrate active data. `--accept` supplies that decision for noninteractive execution.
+- `manage_blockers` permits safely identified services and activators to be stopped, masked, and restored.
+- `ignore_runtime` permits transient sockets to be omitted while preserving strict checks for regular files and FIFOs.
+
+Unlisted paths use strict activity checks. Policies do not weaken path, storage, mount, hard-link, copy, or transaction validation.
+
+---
+
+## Data and Mount Verification
+
+The migration copy preserves ownership, permissions, ACLs, extended attributes, and hard links within the migrated tree. Hard links that cross the migration boundary are refused because moving only one name would change their semantics.
+
+The engine also refuses nested mounts, unexpected nested subvolumes, unsafe symlink ancestors, ambiguous stacked mounts, and inaccessible activity inspection. Copy verification combines itemized comparison with checksums and validates the mounted filesystem UUID, subvolume path, and read/write state.
+
+Mount options are derived from the authoritative existing mount and `fstab` entry. Explicit administrator choices are retained, runtime selectors are removed, and preferred Btrfs defaults are added only when no explicit alternative exists. Existing eligible entries can receive option-only updates without a live remount.
+
+---
+
+## Transaction and Recovery
+
+Before the first mutation, the engine records the plan and original `fstab` beneath `/var/lib/add_subvolumes`. A pending transaction prevents another run until the interrupted migration is recovered or reviewed.
+
+Before commit, any failed migration retains every recovery directory, replacement mount, original `fstab`, and pending record. The engine does not delete original data unless all changed paths have passed their required checks.
+
+Once the staged `fstab` has been checked against the original and committed atomically, the migration is complete. Recovery-directory cleanup is best effort per path: a busy directory, changed identity, or deletion error retains that one backup and continues cleaning the others. These post-commit cleanup failures are reported but do not recreate a recovery-required transaction.
 
 ---
 
@@ -123,7 +176,7 @@ The migration engine supports two layouts at the same time:
 - Ordinary paths that should be converted into nested `@/...` or `@home/...` subvolumes.
 - Exact target paths already backed by independent Btrfs mounts, which are preserved unchanged.
 
-The implementation is distribution-neutral. Compatibility validation covers Debian, Ubuntu, Kubuntu, and CachyOS, representing Debian/Ubuntu-based and Arch-based systems. Version 1.0.1 was regression-tested on Debian and CachyOS after the independent-mount detection was added.
+The implementation is distribution-neutral. Version 2.0.0 completed two add_subvolumes regression stages on Debian, Kubuntu, TUXEDO OS, Manjaro, CachyOS, and EndeavourOS, representing Debian- and Ubuntu-based systems and Arch-based systems. Every distribution passed both the initial configured migration and later adoption of `/var/lib/bootprep` as an additional subvolume.
 
 ---
 
