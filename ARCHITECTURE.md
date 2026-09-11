@@ -180,6 +180,29 @@ The implementation is distribution-neutral. Version 2.0.0 completed two add_subv
 
 ---
 
+## Repository Layout
+
+The operational script and configuration files remain at the repository root. Development-only material is separated under `dev/`:
+
+```text
+add_subvolumes/
+├── add_subvolumes.sh
+├── ROOTVOLUMES.conf
+├── HOMEVOLUMES.conf
+├── ACTIVITY_POLICIES.conf
+├── README.md
+├── ARCHITECTURE.md
+├── CHANGELOG.md
+├── dev/
+│   ├── README.md
+│   └── tests/
+└── LICENSE
+```
+
+The `dev/` tree is not required to install, run, or operate add_subvolumes.
+
+---
+
 ## Relationship to BootPrep
 
 **add_subvolumes** is intended for initial system deployment and bulk subvolume adoption.

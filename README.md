@@ -151,6 +151,12 @@ All 12 add_subvolumes stages passed. Compatibility is determined by filesystem a
 
 ---
 
+## Development Files
+
+Development and regression tests are kept under `dev/`. They are not required to install, run, or operate add_subvolumes. See [`dev/README.md`](dev/README.md) for the local test command.
+
+---
+
 ## License
 
 GPL-3.0-or-later

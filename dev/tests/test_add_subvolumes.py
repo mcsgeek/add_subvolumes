@@ -1,6 +1,6 @@
 """Unprivileged regression tests; no live mounts or system files are changed.
 
-Run: python3 -m unittest discover -s tests -v
+Run: python3 -m unittest discover -s dev/tests -v
 """
 import contextlib
 import io
@@ -17,9 +17,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 
-SCRIPT = Path(__file__).resolve().parent / "add_subvolumes.sh"
-if not SCRIPT.exists():
-    SCRIPT = Path(__file__).resolve().parent.parent / "add_subvolumes.sh"
+SCRIPT = Path(__file__).resolve().parents[2] / "add_subvolumes.sh"
 SOURCE = SCRIPT.read_text().split("<<'PYTHON_ENGINE'\n", 1)[1].rsplit("\nPYTHON_ENGINE", 1)[0]
 engine = types.ModuleType("add_subvolumes_engine")
 sys.modules[engine.__name__] = engine
