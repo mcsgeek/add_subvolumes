@@ -129,13 +129,13 @@ Exact target paths already mounted as Btrfs subvolumes remain authoritative and 
 
 The Bash launcher validates the command line and starts an embedded Python 3.9+ migration engine. Configuration files are parsed as a restricted data format; they are never sourced as shell code.
 
-`ROOTVOLUMES.conf` and `HOMEVOLUMES.conf` define migration targets. `ACTIVITY_POLICIES.conf` assigns exceptional behavior to exact configured paths:
+`ROOTVOLUMES.conf` and `HOMEVOLUMES.conf` define migration targets. For every busy target, the engine first resolves open PIDs to manageable systemd units, then tries applicable known activator rules. Only when mitigation is unavailable does it use a configured active-data decision or skip with reboot guidance. `ACTIVITY_POLICIES.conf` assigns exceptional behavior to exact configured paths:
 
 - `accept_risk` permits an explicit decision to migrate active data. `--accept` supplies that decision for noninteractive execution.
-- `manage_blockers` permits safely identified services and activators to be stopped, masked, and restored.
+- `manage_blockers` remains in the configuration format for compatibility; service discovery no longer depends on this list.
 - `ignore_runtime` permits transient sockets to be omitted while preserving strict checks for regular files and FIFOs.
 
-Unlisted paths use strict activity checks. Policies do not weaken path, storage, mount, hard-link, copy, or transaction validation.
+Unlisted paths still require a quiet directory before migration, including after any service stop. Policies do not weaken path, storage, mount, hard-link, copy, or transaction validation.
 
 ---
 
@@ -155,7 +155,7 @@ Before the first mutation, the engine records the plan and original `fstab` bene
 
 Before commit, any failed migration retains every recovery directory, replacement mount, original `fstab`, and pending record. The engine does not delete original data unless all changed paths have passed their required checks.
 
-Once the staged `fstab` has been checked against the original and committed atomically, the migration is complete. Recovery-directory cleanup is best effort per path: a busy directory, changed identity, or deletion error retains that one backup and continues cleaning the others. These post-commit cleanup failures are reported but do not recreate a recovery-required transaction.
+Once the staged `fstab` has been checked against the original and committed atomically, the migration is complete. Recovery-directory cleanup is best effort per path: a busy directory, changed identity, or deletion error retains that one backup and continues cleaning the others. These post-commit cleanup failures are reported as retained backups, without pre-commit recovery or no-reboot guidance.
 
 ---
 
@@ -176,7 +176,7 @@ The migration engine supports two layouts at the same time:
 - Ordinary paths that should be converted into nested `@/...` or `@home/...` subvolumes.
 - Exact target paths already backed by independent Btrfs mounts, which are preserved unchanged.
 
-The implementation is distribution-neutral. Version 2.0.0 completed two add_subvolumes regression stages on Debian, Kubuntu, TUXEDO OS, Manjaro, CachyOS, and EndeavourOS, representing Debian- and Ubuntu-based systems and Arch-based systems. Every distribution passed both the initial configured migration and later adoption of `/var/lib/bootprep` as an additional subvolume.
+The implementation is distribution-neutral. Version 2.1.0 completed two add_subvolumes regression stages on Debian, Kubuntu, TUXEDO OS, Manjaro, CachyOS, and EndeavourOS, representing Debian- and Ubuntu-based systems and Arch-based systems. Every distribution passed both the initial configured migration and later adoption of `/var/lib/bootprep` as an additional subvolume.
 
 ---
 

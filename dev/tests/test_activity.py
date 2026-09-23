@@ -107,6 +107,67 @@ class ActivityTests(unittest.TestCase):
                      patch.object(engine, "root", return_value=result("0::/system.slice/" + name + "\n")):
                     self.assertEqual(set(self.m.blocker_units({123})), {name})
 
+    def test_unlisted_busy_path_discovers_and_prepares_service(self):
+        item = engine.Item("/var/cache", "convert")
+        self.m.items = [item]
+        self.m.blocker_units = Mock(return_value={"smbd.service": unit("smbd.service")})
+        self.m.unit_info = Mock(return_value=unit("smbd.service", UnitFileState="masked-runtime"))
+        self.m.wait_units = Mock()
+        self.m.no_open_users.side_effect = lambda path: (
+            (_ for _ in ()).throw(engine.Busy(path, {929}))
+            if not self.m.service_changes else None)
+        with patch.object(engine, "root", return_value=result()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(self.m.prepare_activity(item))
+        self.assertEqual(item.action, "convert")
+        self.m.blocker_units.assert_called_once_with({929}, ())
+        self.assertEqual(self.m.service_changes[0]["unit"], "smbd.service")
+
+    def test_known_activator_is_tried_after_pid_discovery(self):
+        item = engine.Item("/var/crash", "convert")
+        self.m.items = [item]
+        self.m.blocker_units = Mock(side_effect=[engine.Refusal("unknown PID owner"),
+                                                 {"whoopsie.path": unit("whoopsie.path")}])
+        self.m.unit_info = Mock(return_value=unit("whoopsie.path", UnitFileState="masked-runtime"))
+        self.m.wait_units = Mock()
+        self.m.no_open_users.side_effect = lambda path: (
+            (_ for _ in ()).throw(engine.Busy(path, {929}))
+            if not self.m.service_changes else None)
+        with patch.object(engine, "root", return_value=result()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(self.m.prepare_activity(item))
+        self.assertEqual(self.m.blocker_units.call_args_list[0], unittest.mock.call({929}, ()))
+        self.assertEqual(self.m.blocker_units.call_args_list[1],
+                         unittest.mock.call(set(), self.m.known_activators("/var/crash")))
+
+    def test_prepared_path_rediscovers_new_busy_process(self):
+        item = engine.Item("/var/cache", "convert")
+        self.m.items = [item]
+        self.m.service_changes = [{"unit": "old.service", "path": item.path,
+                                   "was_active": True, "restored": False}]
+        self.m.blocker_units = Mock(return_value={"smbd.service": unit("smbd.service")})
+        self.m.unit_info = Mock(return_value=unit("smbd.service", UnitFileState="masked-runtime"))
+        self.m.wait_units = Mock()
+        self.m.no_open_users.side_effect = lambda path: (
+            (_ for _ in ()).throw(engine.Busy(path, {929}))
+            if len(self.m.service_changes) == 1 else None)
+        with patch.object(engine, "root", return_value=result()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(self.m.prepare_activity(item))
+        self.m.blocker_units.assert_called_once_with({929}, ())
+        self.assertEqual(self.m.service_changes[-1]["unit"], "smbd.service")
+
+    def test_failed_stop_does_not_use_a_momentarily_quiet_recheck(self):
+        item = engine.Item("/var/cache", "convert")
+        self.m.items = [item]
+        self.m.blocker_units = Mock(return_value={"smbd.service": unit("smbd.service")})
+        self.m.unit_info = Mock(return_value=unit("smbd.service", UnitFileState="masked-runtime"))
+        self.m.wait_units = Mock(side_effect=[engine.Refusal("stop failed"), None])
+        self.m.no_open_users.side_effect = [engine.Busy(item.path, {929}), None]
+        with patch.object(engine, "root", return_value=result()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(self.m.prepare_activity(item))
+        self.assertEqual(item.action, "skip")
+        self.assertIn("stop failed", item.reason)
+        self.assertIn("Reboot and retry", item.reason)
+        self.assertEqual(self.m.no_open_users.call_count, 1)
+
     def test_critical_names_aliases_and_lifecycle_actions_rejected(self):
         for name, extra in (("systemd-journald.service", {}), ("sshd@client.service", {}),
                             ("custom.service", {"Names": "custom.service display-manager.service"}),
@@ -161,13 +222,14 @@ class ActivityTests(unittest.TestCase):
         self.assertNotIn("browse.timer", active)
         self.assertTrue(all(entry["restored"] for entry in self.m.service_changes))
 
-    def test_managed_preparation_precedes_all_migrations(self):
+    def test_activity_preparation_precedes_all_migrations(self):
         cache = engine.Item("/var/cache", "convert")
         spool = engine.Item("/var/spool", "convert")
         self.m.items = [cache, spool]
         self.m.prepare_activity = Mock(return_value=True)
         self.m.prepare_managed_activity()
-        self.m.prepare_activity.assert_called_once_with(spool)
+        self.assertEqual(self.m.prepare_activity.call_args_list,
+                         [unittest.mock.call(cache), unittest.mock.call(spool)])
         self.assertEqual(cache.status, "planned")
 
     def prepare(self):
@@ -276,6 +338,39 @@ class ActivityIntegrationTests(unittest.TestCase):
     setUp = base.EndToEndSimulationTests.setUp
     execute = base.EndToEndSimulationTests.execute
 
+    def test_unlisted_busy_cache_is_planned_and_migrated_with_discovered_service(self):
+        self.backend.write("/var/cache/item", "cached data")
+        self.migration.read_fstab()
+        self.migration.blocker_units = Mock(return_value={"smbd.service": unit("smbd.service")})
+        self.migration.unit_info = Mock(return_value=unit("smbd.service", UnitFileState="masked-runtime"))
+        self.migration.wait_units = Mock()
+        self.migration.no_open_users = Mock(side_effect=lambda path: (
+            (_ for _ in ()).throw(engine.Busy(path, {929}))
+            if path == "/var/cache" and not self.migration.service_changes else None))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.migration.build_plan(["/var/cache"], [])
+        self.assertEqual(self.migration.items[0].action, "convert")
+        self.assertIn("smbd.service", self.migration.items[0].activity)
+        self.assertFalse(any(call[0] == "systemctl" for call in self.backend.calls))
+        self.execute()
+        self.assertEqual(self.backend.resolve("/var/cache/item").read_text(), "cached data")
+        self.assertTrue(all(entry["restored"] for entry in self.migration.service_changes))
+
+    def test_dry_plan_tries_known_activator_after_pid_discovery(self):
+        self.backend.write("/var/crash/report", "crash data")
+        self.migration.read_fstab()
+        self.migration.no_open_users = Mock(side_effect=engine.Busy("/var/crash", {929}))
+        self.migration.blocker_units = Mock(side_effect=[engine.Refusal("unknown PID owner"),
+                                                         {"whoopsie.path": unit("whoopsie.path")}])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.migration.build_plan(["/var/crash"], [])
+        item = self.migration.items[0]
+        self.assertEqual(item.action, "convert")
+        self.assertIn("whoopsie.path", item.activity)
+        self.assertEqual(self.migration.blocker_units.call_args_list[0], unittest.mock.call({929}))
+        self.assertEqual(self.migration.blocker_units.call_args_list[1],
+                         unittest.mock.call(set(), self.migration.known_activators("/var/crash")))
+
     def plan_special(self):
         self.backend.write("/var/log/Xorg.0.log", "old log")
         self.backend.write("/var/spool/job", "queued work")
@@ -292,9 +387,10 @@ class ActivityIntegrationTests(unittest.TestCase):
         self.migration.accept_data_risk = Mock()
         self.plan_special()
         self.migration.accept_data_risk.assert_not_called()
-        self.assertEqual(len(self.migration.changes()), 3)
+        self.assertEqual(len(self.migration.changes()), 2)
         self.assertFalse(any(c[0] == "systemctl" for c in self.backend.calls))
-        self.assertTrue(all(i.activity for i in self.migration.items if i.path != "/opt"))
+        self.assertTrue(next(i.activity for i in self.migration.items if i.path == "/var/log"))
+        self.assertIn("Reboot and retry", next(i.reason for i in self.migration.items if i.path == "/var/spool"))
 
     def test_accept_log_skip_spool_and_finish_other_paths(self):
         self.plan_special()
@@ -319,7 +415,9 @@ class ActivityIntegrationTests(unittest.TestCase):
         self.assertEqual(self.backend.resolve("/var/spool/job").read_text(), "queued work")
 
     def setup_managed_spool(self):
-        self.plan_special()
+        self.backend.write("/var/log/Xorg.0.log", "old log")
+        self.backend.write("/var/spool/job", "queued work")
+        self.migration.read_fstab()
         self.migration.accept_data_risk = Mock(return_value=True)
         self.migration.blocker_units = Mock(return_value={"cron.service": unit("cron.service")})
         self.migration.unit_info = Mock(return_value=unit("cron.service", UnitFileState="masked-runtime"))
@@ -328,6 +426,8 @@ class ActivityIntegrationTests(unittest.TestCase):
             if path == "/var/log" or (path == "/var/spool" and not self.migration.service_changes):
                 raise engine.Busy(path, {123})
         self.migration.no_open_users = Mock(side_effect=busy)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.migration.build_plan(["/opt", "/var/log", "/var/spool"], [])
 
     def test_managed_spool_completes_and_restores_services(self):
         self.setup_managed_spool()

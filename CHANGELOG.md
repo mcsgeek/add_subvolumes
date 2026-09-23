@@ -6,6 +6,19 @@ The project follows Semantic Versioning.
 
 ---
 
+## [2.1.0] - 2026-09-23
+
+### Fixed
+
+- Busy paths now try systemd blocker discovery from open process IDs first, then applicable known activator rules, before falling back to active-data consent or `SKIP / Reboot and retry`. Dry-run reports a discovered mitigation; execution rechecks, temporarily stops and restores services, and verifies that the path is quiet.
+- Post-commit cleanup now reports a busy old backup as retained for manual review without contradictory recovery or no-reboot instructions. Pre-commit activity still requires recovery.
+
+### Compatibility
+
+- Repeated the initial migration and later `/var/lib/bootprep` adoption on Debian, Kubuntu, TUXEDO OS, Manjaro, CachyOS, and EndeavourOS; all six systems passed.
+
+---
+
 ## [2.0.0] - 2026-09-10
 
 ### Added

@@ -316,7 +316,7 @@ class LayoutTests(unittest.TestCase):
     def test_open_processes_block_conversion(self):
         self.migration.exists = Mock(return_value=True)
         with patch.object(engine, "root", return_value=result("p9999999\n")):
-            with self.assertRaisesRegex(engine.Refusal, "Reboot and retry"):
+            with self.assertRaisesRegex(engine.Busy, "used by process IDs 9999999"):
                 self.migration.no_open_users("/opt")
 
     def test_unrelated_document_portal_is_exempted_from_lsof_stat_calls(self):
@@ -441,6 +441,12 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(any(call.args[0][0] == "rm" for call in commands.call_args_list))
         self.assertTrue(migration.pending)
 
+    def test_precommit_busy_backup_keeps_recovery_guidance(self):
+        migration = self.prepare_cleanup()
+        migration.no_open_users.side_effect = engine.Busy(self.item.backup, {22429})
+        with self.assertRaisesRegex(engine.Refusal, "Recovery is required; do not reboot"):
+            migration.check_item_users(self.item, self.item.backup)
+
     def test_changed_backup_identity_prevents_removal(self):
         migration = self.prepare_cleanup()
         migration.metadata.return_value = ("other:inode", 0, 0, 0o755)
@@ -472,12 +478,13 @@ class RecoveryTests(unittest.TestCase):
                              source_identity="dev:inode", status="verified")
         migration.items.append(second)
 
-        def users(item, path):
-            self.assertNotEqual(path, item.path, "post-commit activity on the authoritative path must be ignored")
+        def users(path):
+            self.assertNotIn(path, (self.item.path, second.path),
+                             "post-commit activity on the authoritative path must be ignored")
             if path == second.backup:
-                raise engine.Refusal("old backup is busy")
+                raise engine.Busy(path, {22429})
 
-        migration.check_item_users = Mock(side_effect=users)
+        migration.no_open_users.side_effect = users
         with patch.object(engine, "root", return_value=result()) as commands, \
              contextlib.redirect_stderr(io.StringIO()):
             migration.delete_verified_backups()
@@ -487,6 +494,10 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(second.status, "complete-backup-retained")
         self.assertEqual(self.item.status, "complete")
         self.assertEqual([entry["backup"] for entry in migration.retained_backups], [second.backup])
+        reason = migration.retained_backups[0]["reason"]
+        self.assertIn("migration is committed", reason)
+        self.assertIn("22429", reason)
+        self.assertNotIn("Recovery is required", reason)
         migration.restore_services.assert_called_once_with()
         self.assertFalse(migration.pending)
         migration.verify_mount.assert_not_called()

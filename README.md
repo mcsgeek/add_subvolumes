@@ -2,7 +2,7 @@
 
 Safely create and manage dedicated Btrfs subvolumes within existing root and separate-home Btrfs layouts.
 
-**Version 2.0.0**
+**Version 2.1.0**
 
 For each configured path, the migration engine automatically determines whether a new subvolume should be created, an existing directory should be safely converted into a subvolume while preserving its contents, or an existing subvolume should be skipped.
 
@@ -22,7 +22,7 @@ The project intentionally separates configuration from the migration engine, all
 - Verifies copied data before committing `/etc/fstab`
 - Uses a recoverable transaction record when execution is interrupted
 - Preserves existing mount choices while adding preferred options only where appropriate
-- Handles active paths through explicit, per-path activity policies
+- Discovers manageable service blockers on busy paths and uses per-path policies for exceptional activity
 - Safely reruns as additional paths are adopted or mount options are normalized
 - Remains self-contained with no installation required
 
@@ -62,13 +62,13 @@ The supplied configuration enables only broadly useful subvolumes by default. Op
 
 ### ACTIVITY_POLICIES.conf
 
-Defines exact configured paths that need special handling when processes are using them:
+Defines exact configured paths that need exceptional activity handling. For every busy path, the engine first tries to identify a manageable systemd service from its open process IDs. It then tries applicable known activator rules. If neither can make the path quiet, it uses any configured active-data decision or skips with reboot guidance.
 
 - `accept_risk` allows an explicit active-data decision. In unattended execution, `--accept` records that decision for these paths.
-- `manage_blockers` lets the engine stop, mask, and later restore safely identified services and activators.
+- `manage_blockers` remains in the configuration format for compatibility; it no longer limits service discovery to listed paths.
 - `ignore_runtime` permits transient sockets to be omitted while retaining strict checks for regular files and FIFOs.
 
-Paths without a policy remain strict. Policies match exact configured paths and do not apply automatically to descendants.
+Paths without a policy still require the path to be quiet before migration, but they may use safely discovered service mitigation. Policies match exact configured paths and do not apply automatically to descendants.
 
 Configuration files are parsed as data instead of being sourced as shell code, and unsafe, duplicate, overlapping, or protected paths are rejected.
 
@@ -106,9 +106,9 @@ For each configured path the migration engine automatically determines whether i
 - Skip the path because the requested nested Btrfs subvolume already exists
 - Skip the path because it is already an independently mounted Btrfs subvolume
 
-In dry-run mode, the utility discovers the environment, validates configuration and policies, checks activity, and prints the proposed work without starting a transaction.
+In dry-run mode, the utility discovers the environment, validates configuration and policies, checks activity, and prints any proposed temporary service mitigation without starting a transaction.
 
-In execute mode, each conversion is copied and verified while the original remains available as a recovery directory. After all replacement mounts have been verified and synchronized, the utility atomically commits the prepared `/etc/fstab`. It then removes each verified recovery directory independently. A busy or failed post-commit cleanup is reported and retained without reversing an otherwise completed migration.
+In execute mode, the utility rechecks activity, temporarily stops and masks manageable system services when needed, and verifies that each path is quiet before copying. A completed run restores those services; an interrupted transaction retains their state for recovery. Each conversion is copied and verified while the original remains available as a recovery directory. After all replacement mounts have been verified and synchronized, the utility atomically commits the prepared `/etc/fstab`. It then removes each verified recovery directory independently. A busy or failed post-commit cleanup is reported and retained without reversing an otherwise completed migration.
 
 A reboot is recommended after a successful migration.
 
@@ -132,7 +132,7 @@ The migration engine is designed to be conservative.
 
 ## Compatibility
 
-Version 2.0.0 completed regression testing on Debian, Kubuntu, TUXEDO OS, Manjaro, CachyOS, and EndeavourOS. These represent Debian- and Ubuntu-based systems and Arch-based systems.
+Version 2.1.0 completed regression testing on Debian, Kubuntu, TUXEDO OS, Manjaro, CachyOS, and EndeavourOS. These represent Debian- and Ubuntu-based systems and Arch-based systems.
 
 Compatibility is based on filesystem state rather than distribution names. An exact configured target that is already a Btrfs mount point is retained in its existing layout. For example, a distribution-provided `/srv` mount remains untouched even when its underlying subvolume is not named `@/srv`.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: 2.0.0
+# Version: 2.1.0
 # Copyright (C) 2026 Scott McClain
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Keep the launcher and engine together so the tool remains a single script.
@@ -56,9 +56,7 @@ class Refusal(Exception):
 class Busy(Refusal):
     def __init__(self, path, pids):
         self.pids = pids
-        super().__init__(f"{path}: used by process IDs {', '.join(map(str, sorted(pids)))}. "
-                         "Reboot and retry. If it remains busy, review these blockers; "
-                         "applications started at login may reopen it.")
+        super().__init__(f"{path}: used by process IDs {', '.join(map(str, sorted(pids)))}")
 
 
 class MissingTools(Refusal):
@@ -628,6 +626,24 @@ class Migration:
             return ("app-org.kde.discover.notifier@autostart.service",)
         return ()
 
+    def busy_fallback_reason(self, path, reason):
+        return (f"{path}: no safe activity mitigation found ({reason}). Reboot and retry; "
+                "review persistent blockers before changing policy.")
+
+    def plan_edge_activity(self, path):
+        loaded_user = [unit for unit in self.known_user_activators(path)
+                       if self.user_unit_info(unit) is not None]
+        if loaded_user:
+            return ("Execution will attempt to stop and later restore user service: "
+                    + ", ".join(sorted(loaded_user)))
+        activators = self.known_activators(path)
+        if activators:
+            units = self.blocker_units(set(), activators)
+            if units:
+                return ("Execution will attempt to stop/mask and later restore: "
+                        + ", ".join(sorted(units)))
+        return ""
+
     def allow_active_data(self, item):
         return self.policy_for(item.path) == "ask" and item.accept_active_risk
 
@@ -636,6 +652,11 @@ class Migration:
             try:
                 self.activity_users(path, item.path)
             except Busy as exc:
+                if self.committed and path == item.backup:
+                    raise Refusal(f"{path}: old backup is busy "
+                                  f"(PIDs {', '.join(map(str, sorted(exc.pids)))}); "
+                                  "migration is committed and this backup was retained "
+                                  "for manual review.") from exc
                 if item.status != "planned":
                     raise Refusal(f"{path}: became busy after migration started "
                                   f"(PIDs {', '.join(map(str, sorted(exc.pids)))}). "
@@ -861,12 +882,7 @@ class Migration:
 
         # A service may use several configured directories. Keep every held
         # service stopped if any managed migration is only partially complete.
-        affected = {entry["path"] for entry in self.service_changes}
-        affected.update(
-            item.path
-            for item in self.items
-            if self.policy_for(item.path) == "manage"
-        )
+        affected = {item.path for item in self.items if item.action in ("convert", "create", "skip")}
 
         if any(
             item.path in affected
@@ -1068,54 +1084,75 @@ class Migration:
         # Shutdown can write to other selected directories (e.g. CUPS writes
         # /var/cache while releasing /var/spool). Do this before any copying.
         for item in list(self.changes()):
-            if self.policy_for(item.path) == "manage":
-                if not self.prepare_activity(item):
-                    print(f"SKIP {item.path}: {item.reason}")
-                self.record()
+            if not self.prepare_activity(item):
+                print(f"SKIP {item.path}: {item.reason}")
+            self.record()
 
     def prepare_activity(self, item):
+        original_action = item.action
         self.runtime_copy_options(item)
         if self.allow_active_data(item):
             return True
-
-        if self.policy_for(item.path) == "manage":
-            already_prepared = any(
-                entry["path"] == item.path and not entry["restored"]
-                for entry in self.service_changes
-            )
-
-            if already_prepared:
-                self.activity_users(item.path)
-                return True
-
-            user_activators = self.known_user_activators(item.path)
-            if user_activators:
-                prepared = self.prepare_user_activators(item, user_activators)
-                if prepared is not None:
-                    return prepared
-
-            activators = self.known_activators(item.path)
-            if activators:
-                return self.prepare_blockers(item, set(), activators)
-
+        already_prepared = any(
+            entry["path"] == item.path and not entry["restored"]
+            for entry in self.service_changes
+        )
         try:
             self.activity_users(item.path)
+            if already_prepared:
+                return True
+            # Known activators can reopen an otherwise quiet path.
+            if self.known_user_activators(item.path):
+                prepared = self.prepare_user_activators(item, self.known_user_activators(item.path))
+                if prepared is not None:
+                    return prepared
+            if self.known_activators(item.path):
+                return self.prepare_blockers(item, set(), self.known_activators(item.path))
             return True
         except Busy as exc:
-            policy = self.policy_for(item.path)
-            if policy == "ask":
+            reasons = []
+            ledger_before = len(self.service_changes)
+            if self.prepare_blockers(item, exc.pids):
+                return True
+            reasons.append(item.reason)
+            if len(self.service_changes) != ledger_before:
+                # An attempted stop failed verification. Do not treat a
+                # momentarily quiet path after restoration as safe to migrate.
+                item.reason = self.busy_fallback_reason(item.path, item.reason)
+                return False
+
+            # A process may have exited while its owner was being inspected.
+            try:
+                self.activity_users(item.path)
+                item.action, item.reason = original_action, ""
+                return True
+            except Busy:
+                pass
+
+            edge_preparations = []
+            user_activators = self.known_user_activators(item.path)
+            if user_activators:
+                edge_preparations.append(lambda: self.prepare_user_activators(item, user_activators))
+            activators = self.known_activators(item.path)
+            if activators:
+                edge_preparations.append(lambda: self.prepare_blockers(item, set(), activators))
+            for prepare in edge_preparations:
+                result = prepare()
+                if result is True:
+                    item.action, item.reason = original_action, ""
+                    return True
+                if result is False:
+                    reasons.append(item.reason)
+
+            if self.policy_for(item.path) == "ask":
                 if self.accept_data_risk(item.path):
                     item.accept_active_risk = True
+                    item.action, item.reason = original_action, ""
                     self.record()
                     return True
-                item.action, item.reason = "skip", "active-data risk was not accepted"
-                return False
-            if policy == "manage":
-                prepared = self.prepare_blockers(item, exc.pids)
-                if not prepared:
-                    item.reason += " Reboot and retry; review persistent blockers before changing policy."
-                return prepared
-            item.action, item.reason = "skip", str(exc)
+                reasons.append("active-data risk was not accepted")
+            item.action = "skip"
+            item.reason = self.busy_fallback_reason(item.path, "; ".join(r for r in reasons if r) or str(exc))
             return False
 
     def report_skips(self):
@@ -1235,91 +1272,39 @@ class Migration:
         activity = ("Runtime sockets will be omitted; reboot after migration"
                     if self.policy_for(path) == "runtime" else "")
 
-        if self.policy_for(path) == "manage":
-            user_activators = self.known_user_activators(path)
-
-            if user_activators:
-                try:
-                    loaded_user = [
-                        unit
-                        for unit in user_activators
-                        if self.user_unit_info(unit) is not None
-                    ]
-
-                    if loaded_user:
-                        activity = (
-                            "Execution will attempt to stop and later restore user service: "
-                            + ", ".join(sorted(loaded_user))
-                        )
-
-                except Refusal as reason:
-                    activity = (
-                        "Execution will recheck, then skip if unresolved: "
-                        + str(reason)
-                    )
-
-            if not activity:
-                activators = self.known_activators(path)
-
-                if activators:
-                    try:
-                        units = self.blocker_units(set(), activators)
-
-                        if units:
-                            activity = (
-                                "Execution will attempt to stop/mask and later restore: "
-                                + ", ".join(sorted(units))
-                            )
-
-                    except Refusal as reason:
-                        activity = (
-                            "Execution will recheck, then skip if unresolved: "
-                            + str(reason)
-                        )
-
         busy_reason = ""
-
         try:
             self.activity_users(path)
-
+            # Known activators can reopen a quiet directory during migration.
+            try:
+                activity = self.plan_edge_activity(path) or activity
+            except Refusal as reason:
+                activity = "Execution will recheck known activators: " + str(reason)
         except Busy as exc:
-            if self.policy_for(path) == "ask":
-                activity = (
-                    "Busy: active-data risk will be accepted during execution (--accept)"
-                    if self.auto_accept
-                    else "Busy: execution will ask to accept active-data risk or skip"
-                )
-
-            elif self.policy_for(path) == "manage":
-                user_activators = self.known_user_activators(path)
-
+            reasons = []
+            mitigation = ""
+            try:
+                units = self.blocker_units(exc.pids)
+                if units:
+                    mitigation = ("Execution will attempt to stop/mask and later restore: "
+                                  + ", ".join(sorted(units)))
+                else:
+                    reasons.append("no manageable system service")
+            except Refusal as reason:
+                reasons.append(str(reason))
+            if not mitigation:
                 try:
-                    loaded_user = [
-                        unit
-                        for unit in user_activators
-                        if self.user_unit_info(unit) is not None
-                    ]
-
-                    if loaded_user:
-                        activity = (
-                            "Execution will attempt to stop and later restore user service: "
-                            + ", ".join(sorted(loaded_user))
-                        )
-                    else:
-                        units = self.blocker_units(exc.pids)
-                        activity = (
-                            "Execution will attempt to stop/mask and later restore: "
-                            + ", ".join(sorted(units))
-                        )
-
+                    mitigation = self.plan_edge_activity(path)
                 except Refusal as reason:
-                    activity = (
-                        "Execution will recheck, then skip if unresolved: "
-                        + str(reason)
-                    )
-
+                    reasons.append(str(reason))
+            if mitigation:
+                activity = mitigation
             else:
-                busy_reason = str(exc)
+                if self.policy_for(path) == "ask":
+                    activity = ("Busy: active-data risk will be accepted during execution (--accept)"
+                                if self.auto_accept else "Busy: execution will ask to accept active-data risk or skip")
+                else:
+                    busy_reason = self.busy_fallback_reason(path, "; ".join(reasons) or str(exc))
 
         existed = self.exists(path)
         ancestor = path if existed else self.nearest(path)
@@ -1531,12 +1516,22 @@ class Migration:
             return
         try:
             self.check_item_users(item, item.path)
-        except Busy as exc:
-            item.action, item.reason = "skip", "activity returned before migration: " + str(exc)
-            self.restore_services(only_path=item.path)
-            self.record()
-            print(f"SKIP {item.path}: {item.reason}")
-            return
+        except Busy:
+            # A new process may have opened the path after preparation.
+            if not self.prepare_activity(item):
+                self.restore_services(only_path=item.path)
+                self.record()
+                print(f"SKIP {item.path}: {item.reason}")
+                return
+            try:
+                self.check_item_users(item, item.path)
+            except Busy as retry:
+                item.action = "skip"
+                item.reason = self.busy_fallback_reason(item.path, str(retry))
+                self.restore_services(only_path=item.path)
+                self.record()
+                print(f"SKIP {item.path}: {item.reason}")
+                return
         if item.existed:
             if self.metadata(item.path)[0] != item.source_identity:
                 raise Refusal(f"{item.path}: source identity changed after planning")
